@@ -11042,16 +11042,100 @@ std::string GCode::set_filament_pressure_advance(unsigned int filament_id, int t
     return m_writer.set_pressure_advance(m_config.pressure_advance.get_at(fi), tool);
 }
 
-inline std::string polygon_to_string(const Polygon &polygon, Print *print, bool is_print_space = false) {
+namespace {
+// Douglas-Peucker for an open arc p[first..last]; the arc ends are kept by the caller.
+void dp_recurse(const std::vector<Vec2d> &p, size_t first, size_t last, double tol, std::vector<bool> &keep)
+{
+    if (last <= first + 1)
+        return;
+    const Vec2d a = p[first], b = p[last];
+    const double dx = b.x() - a.x(), dy = b.y() - a.y();
+    const double chord = std::hypot(dx, dy);
+
+    double worst = 0.;
+    size_t at    = first;
+    for (size_t i = first + 1; i < last; ++i) {
+        const double d = chord == 0. ? std::hypot(p[i].x() - a.x(), p[i].y() - a.y())
+                                     : std::abs(dx * (a.y() - p[i].y()) - dy * (a.x() - p[i].x())) / chord;
+        if (d > worst) {
+            worst = d;
+            at    = i;
+        }
+    }
+    if (worst <= tol)
+        return;
+    keep[at] = true;
+    dp_recurse(p, first, at, tol, keep);
+    dp_recurse(p, at, last, tol, keep);
+}
+
+// Simplifies a closed ring (no duplicated closing point). The extreme points along X and Y
+// are never removed, so the bounding box of the outline stays exact.
+// tol <= 0 returns the bounding rectangle.
+std::vector<Vec2d> simplify_exclude_ring(const std::vector<Vec2d> &p, double tol)
+{
+    const size_t n = p.size();
+    size_t minX = 0, maxX = 0, minY = 0, maxY = 0;
+    for (size_t i = 1; i < n; ++i) {
+        if (p[i].x() < p[minX].x()) minX = i;
+        if (p[i].x() > p[maxX].x()) maxX = i;
+        if (p[i].y() < p[minY].y()) minY = i;
+        if (p[i].y() > p[maxY].y()) maxY = i;
+    }
+    if (tol <= 0.) {
+        const double x0 = p[minX].x(), y0 = p[minY].y(), x1 = p[maxX].x(), y1 = p[maxY].y();
+        return {Vec2d(x0, y0), Vec2d(x1, y0), Vec2d(x1, y1), Vec2d(x0, y1)};
+    }
+
+    std::vector<size_t> anchors{minX, maxX, minY, maxY};
+    std::sort(anchors.begin(), anchors.end());
+    anchors.erase(std::unique(anchors.begin(), anchors.end()), anchors.end());
+
+    // Rotate the ring to start at the first anchor, so that no arc wraps around the array end.
+    const size_t a0 = anchors.front();
+    std::vector<Vec2d> r;
+    r.reserve(n + 1);
+    for (size_t i = 0; i < n; ++i)
+        r.push_back(p[(a0 + i) % n]);
+    r.push_back(p[a0]); // closing point
+
+    std::vector<bool>   keep(n + 1, false);
+    std::vector<size_t> cuts;
+    for (size_t a : anchors)
+        cuts.push_back((a + n - a0) % n);
+    cuts.push_back(n);
+    for (size_t c : cuts)
+        keep[c] = true;
+    for (size_t k = 0; k + 1 < cuts.size(); ++k)
+        dp_recurse(r, cuts[k], cuts[k + 1], tol, keep);
+
+    std::vector<Vec2d> out;
+    for (size_t i = 0; i < n; ++i)
+        if (keep[i])
+            out.push_back(r[i]);
+    return out;
+}
+} // namespace
+
+// tolerance < 0: write the outline unchanged.
+inline std::string polygon_to_string(const Polygon &polygon, Print *print, bool is_print_space = false, double tolerance = -1.)
+{
+    std::vector<Vec2d> pts;
+    pts.reserve(polygon.points.size());
+    for (const Point &p : polygon.points)
+        pts.push_back(is_print_space ? Vec2d(p.x(), p.y()) : print->translate_to_print_space(p));
+
+    if (tolerance >= 0. && pts.size() > 4) {
+        std::vector<Vec2d> simple = simplify_exclude_ring(pts, tolerance);
+        if (simple.size() < pts.size())
+            pts = std::move(simple);
+    }
+
     std::ostringstream gcode;
     gcode << "[";
-    for (const Point &p : polygon.points) {
-        const auto v = is_print_space ? Vec2d(p.x(), p.y()) : print->translate_to_print_space(p);
+    for (const Vec2d &v : pts)
         gcode << "[" << v.x() << "," << v.y() << "],";
-    }
-    const auto first_v = is_print_space ? Vec2d(polygon.points.front().x(), polygon.points.front().y())
-                                        : print->translate_to_print_space(polygon.points.front());
-    gcode << "[" << first_v.x() << "," << first_v.y() << "]";
+    gcode << "[" << pts.front().x() << "," << pts.front().y() << "]";
     gcode << "]";
     return gcode.str();
 }
@@ -11081,6 +11165,9 @@ std::string GCode::set_object_info(Print *print) {
     } else {
         size_t unique_id = 0;
         m_instance_names.clear();
+        const double exclude_tol = print->config().simplify_exclude_object.value
+                                       ? print->config().exclude_object_tolerance.value
+                                       : -1.;
         for (PrintObject* object : print->objects()) {
             object->set_id(object_id++);
             size_t inst_id = 0;
@@ -11096,7 +11183,7 @@ std::string GCode::set_object_info(Print *print) {
                 const std::string &inst_name = instance_name(inst);
                 if (gflavor == gcfKlipper) {
                     gcode << "EXCLUDE_OBJECT_DEFINE NAME=" << inst_name << " CENTER=" << center.x() << "," << center.y()
-                          << " POLYGON=" << polygon_to_string(inst.get_convex_hull_2d(), print) << "\n";
+                          << " POLYGON=" << polygon_to_string(inst.get_convex_hull_2d(), print, false, exclude_tol) << "\n";
                 } else if (gflavor == gcfMarlinLegacy || gflavor == gcfMarlinFirmware || gflavor == gcfRepRapFirmware) {
                     gcode << "M486 S" << std::to_string(inst.unique_id);
                     if (gflavor == gcfRepRapFirmware)

@@ -4630,6 +4630,25 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(false));
 
+    def = this->add("simplify_exclude_object", coBool);
+    def->label = L("Simplify excluded object outlines");
+    def->tooltip = L("Reduce the number of points in the outline written to EXCLUDE_OBJECT_DEFINE. "
+                     "Plates with many small objects can produce tens of thousands of points, "
+                     "which may stall Klipper while it parses the G-code. "
+                     "The bounding box of every object is preserved exactly.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("exclude_object_tolerance", coFloat);
+    def->label = L("Outline tolerance");
+    def->tooltip = L("Maximum deviation of the simplified outline from the original outline. "
+                     "0 writes the bounding rectangle of each object.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->max = 5;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0.2));
+
     def = this->add("gcode_comments", coBool);
     def->label = L("Verbose G-code");
     def->tooltip = L("Enable this to get a commented G-code file, with each line explained by a descriptive text. "
