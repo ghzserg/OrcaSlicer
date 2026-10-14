@@ -3362,6 +3362,13 @@ void TabPrint::toggle_options()
 
     m_config_manipulation.toggle_print_fff_options(m_config, int(intptr_t(m_extruder_switch->GetClientData())), m_type < Preset::TYPE_COUNT);
 
+    {
+        const bool have_exclude_object = m_config->opt_bool("exclude_object");
+        const bool have_simplify       = have_exclude_object && m_config->opt_bool("simplify_exclude_object");
+        toggle_line("simplify_exclude_object", have_exclude_object);
+        toggle_line("exclude_object_tolerance", have_simplify);
+    }
+
     if (m_type == Preset::TYPE_PLATE) {
         const auto &printer_config = m_preset_bundle->printers.get_edited_preset().config;
         toggle_option("curr_bed_type", m_preset_bundle->is_bbl_vendor() || printer_config.opt_bool("support_multi_bed_types"));
