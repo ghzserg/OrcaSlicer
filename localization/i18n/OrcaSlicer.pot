@@ -15521,6 +15521,18 @@ msgstr ""
 msgid "Enable this option to add EXCLUDE OBJECT command in G-code."
 msgstr ""
 
+msgid "Simplify excluded object outlines"
+msgstr ""
+
+msgid "Reduce the number of points in the outline written to EXCLUDE_OBJECT_DEFINE. Plates with many small objects can produce tens of thousands of points, which may stall Klipper while it parses the G-code. The bounding box of every object is preserved exactly."
+msgstr ""
+
+msgid "Outline tolerance"
+msgstr ""
+
+msgid "Maximum deviation of the simplified outline from the original outline. 0 writes the bounding rectangle of each object."
+msgstr ""
+
 msgid "Verbose G-code"
 msgstr ""
 
